@@ -69,6 +69,11 @@ defmodule Oidcc.Plug.Authorize do
     to fetch the client context from a store instead of using the `provider`, `client_id` and `client_secret`
     directly. This is useful for storing the client context in a database or other persistent
     storage.
+  * `purpose` - purpose of the authorization request, see [https://cdn.connectid.com.au/specifications/oauth2-purpose-01.html]
+  * `require_purpose` - whether to require a `purpose` value
+  * `require_pkce` - whether to require PKCE when getting the token
+  * `response_mode` - response mode to use (defaults to `"query"`)
+  * `request_opts` - config for the pushed authorization HTTP request
   """
   @typedoc since: "0.1.0"
   @type opts :: [
@@ -81,7 +86,12 @@ defmodule Oidcc.Plug.Authorize do
           client_id: String.t() | (-> String.t()) | (Plug.Conn.t() -> String.t()) | nil,
           client_secret: String.t() | (-> String.t()) | (Plug.Conn.t() -> String.t()) | nil,
           client_context_opts: :oidcc_client_context.opts() | (-> :oidcc_client_context.opts()) | nil,
-          client_profile_opts: :oidcc_profile.opts()
+          client_profile_opts: :oidcc_profile.opts(),
+          purpose: String.t(),
+          require_purpose: boolean,
+          require_pkce: boolean,
+          response_mode: String.t(),
+          request_opts: :oidcc_http_util.request_opts()
         ]
 
   @impl Plug
@@ -96,6 +106,11 @@ defmodule Oidcc.Plug.Authorize do
         :redirect_uri,
         :client_context_opts,
         :client_profile_opts,
+        :purpose,
+        :require_purpose,
+        :require_pkce,
+        :response_mode,
+        :request_opts,
         redirect_mode: :inline,
         url_extension: [],
         scopes: ["openid"]
@@ -123,7 +138,7 @@ defmodule Oidcc.Plug.Authorize do
 
     authorization_opts =
       opts
-      |> Keyword.take([:url_extension, :scopes])
+      |> Keyword.take([:url_extension, :scopes, :purpose, :require_purpose, :require_pkce, :response_mode, :request_opts])
       |> Keyword.merge(
         nonce: nonce,
         state: state,
