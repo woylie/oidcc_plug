@@ -23,6 +23,34 @@ defmodule Oidcc.Plug.Authorize do
   * `state` - State to relay to OpenID Provider. Commonly used for target redirect
     URL after authorization.
     Accessible through `Plug.Conn.private[#{__MODULE__}.State]` after `Oidcc.Plug.AuthorizationCallback`
+
+  ## Redirect Modes
+
+  The plug has two redirect modes.
+
+  In `:inline` mode, the plug automatically sends a redirect response.
+
+  In `:manual` mode, the plug assigns the redirect URI as a private value to the
+  connection. You will need to perform the redirect in your controller function.
+
+      plug Oidcc.Plug.Authorize,
+           [
+             # ...
+             redirect_mode: :manual
+           ]
+           when action == :request
+
+      def request(conn, params) do
+        redirect_uri = Map.fetch!(conn.private, Oidcc.Plug.Authorize)
+
+        conn
+        |> put_resp_header("location", redirect_uri)
+        |> send_resp(302, "")
+      end
+
+  This mode is useful if you need to put values into the session before the
+  redirect, or if you need to create a continuity cookie for an OIDC provider
+  that uses the `form_post` response type.
   """
   @moduledoc since: "0.1.0"
 
