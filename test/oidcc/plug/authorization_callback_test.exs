@@ -77,14 +77,14 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
                  }
                } =
                  "get"
-                 |> conn("/", %{"code" => "code"})
+                 |> conn("/", %{"code" => "code", "state" => "state"})
                  |> Plug.Test.init_test_session(%{
                    Authorize.get_session_name() => %{
                      nonce: "nonce",
                      peer_ip: {127, 0, 0, 1},
                      useragent: "useragent",
                      pkce_verifier: "pkce_verifier",
-                     state_verifier: 0
+                     state_verifier: :erlang.phash2("state")
                    }
                  })
                  |> put_req_header("user-agent", "useragent")
@@ -124,14 +124,14 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
                  }
                } =
                  "get"
-                 |> conn("/", %{"code" => "code"})
+                 |> conn("/", %{"code" => "code", "state" => "state"})
                  |> Plug.Test.init_test_session(%{
                    Authorize.get_session_name() => %{
                      nonce: "nonce",
                      peer_ip: {127, 0, 0, 1},
                      useragent: "useragent",
                      pkce_verifier: "pkce_verifier",
-                     state_verifier: 0
+                     state_verifier: :erlang.phash2("state")
                    }
                  })
                  |> put_req_header("user-agent", "useragent")
@@ -157,14 +157,14 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
                private: %{AuthorizationCallback => {:ok, {:token, nil}}}
              } =
                "get"
-               |> conn("/", %{"code" => "code"})
+               |> conn("/", %{"code" => "code", "state" => "state"})
                |> Plug.Test.init_test_session(%{
                  Authorize.get_session_name() => %{
                    nonce: "nonce",
                    peer_ip: {127, 0, 0, 1},
                    useragent: "useragent",
                    pkce_verifier: "pkce_verifier",
-                   state_verifier: 0
+                   state_verifier: :erlang.phash2("state")
                  }
                })
                |> put_req_header("user-agent", "useragent")
@@ -347,7 +347,7 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
 
         conn =
           "get"
-          |> conn("/", %{"code" => "code"})
+          |> conn("/", %{"code" => "code", "state" => "state"})
           |> put_req_header("x-forwarded-for", "10.0.0.1")
           |> Plug.RewriteOn.call(Plug.RewriteOn.init([:x_forwarded_for]))
 
@@ -364,7 +364,7 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
                      peer_ip: {10, 0, 0, 1},
                      useragent: "useragent",
                      pkce_verifier: "pkce_verifier",
-                     state_verifier: 0
+                     state_verifier: :erlang.phash2("state")
                    }
                  })
                  |> put_req_header("user-agent", "useragent")
@@ -400,14 +400,14 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
                  }
                } =
                  "get"
-                 |> conn("/", %{"code" => "code"})
+                 |> conn("/", %{"code" => "code", "state" => "state"})
                  |> Plug.Test.init_test_session(%{
                    Authorize.get_session_name() => %{
                      nonce: "nonce",
                      peer_ip: {127, 0, 0, 2},
                      useragent: "useragent",
                      pkce_verifier: "pkce_verifier",
-                     state_verifier: 0
+                     state_verifier: :erlang.phash2("state")
                    }
                  })
                  |> put_req_header("user-agent", "other useragent")
@@ -431,14 +431,14 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
                }
              } =
                "get"
-               |> conn("/", %{})
+               |> conn("/", %{"state" => "state"})
                |> Plug.Test.init_test_session(%{
                  Authorize.get_session_name() => %{
                    nonce: "nonce",
                    peer_ip: {127, 0, 0, 1},
                    useragent: "useragent",
                    pkce_verifier: "pkce_verifier",
-                   state_verifier: 0
+                   state_verifier: :erlang.phash2("state")
                  }
                })
                |> put_req_header("user-agent", "useragent")
@@ -502,11 +502,11 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
                  |> put_req_header("user-agent", "useragent")
                  |> AuthorizationCallback.call(opts)
 
+        # a verifier is in the session, so omitting the state does not skip the
+        # check
         assert %{
                  halted: false,
-                 private: %{
-                   AuthorizationCallback => {:ok, {:token, %{"sub" => "sub"}}}
-                 }
+                 private: %{AuthorizationCallback => {:error, :state_not_verified}}
                } =
                  "get"
                  |> conn("/", %{"code" => "code"})
@@ -518,6 +518,65 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
                      pkce_verifier: "pkce_verifier",
                      state_verifier: 0
                    }
+                 })
+                 |> put_req_header("user-agent", "useragent")
+                 |> AuthorizationCallback.call(opts)
+      end
+    end
+
+    test "non binary state" do
+      opts =
+        AuthorizationCallback.init(
+          provider: ProviderName,
+          client_id: "client_id",
+          client_secret: "client_secret",
+          redirect_uri: "http://localhost:8080/oidc/return",
+          retrieve_userinfo: false
+        )
+
+      # a param can be a list or a map, ?state[]=a or ?state[a]=b
+      for state <- [["a", "b"], %{"a" => "b"}] do
+        assert %{
+                 halted: false,
+                 private: %{AuthorizationCallback => {:error, :state_not_verified}}
+               } =
+                 "get"
+                 |> conn("/", %{"code" => "code", "state" => state})
+                 |> Plug.Test.init_test_session(%{
+                   Authorize.get_session_name() => %{
+                     nonce: "nonce",
+                     peer_ip: {127, 0, 0, 1},
+                     useragent: "useragent",
+                     pkce_verifier: "pkce_verifier",
+                     state_verifier: :erlang.phash2("state")
+                   }
+                 })
+                 |> put_req_header("user-agent", "useragent")
+                 |> AuthorizationCallback.call(opts)
+      end
+    end
+
+    test "incomplete authorize session" do
+      opts =
+        AuthorizationCallback.init(
+          provider: ProviderName,
+          client_id: "client_id",
+          client_secret: "client_secret",
+          redirect_uri: "http://localhost:8080/oidc/return",
+          retrieve_userinfo: false
+        )
+
+      for session <- [%{}, %{nonce: "nonce"}, %{state_verifier: nil}] do
+        assert %{
+                 halted: false,
+                 private: %{
+                   AuthorizationCallback => {:error, :missing_authorize_session}
+                 }
+               } =
+                 "get"
+                 |> conn("/", %{"code" => "code", "state" => "state"})
+                 |> Plug.Test.init_test_session(%{
+                   Authorize.get_session_name() => session
                  })
                  |> put_req_header("user-agent", "useragent")
                  |> AuthorizationCallback.call(opts)
@@ -550,14 +609,14 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
                  }
                } =
                  "get"
-                 |> conn("/", %{"code" => "code"})
+                 |> conn("/", %{"code" => "code", "state" => "state"})
                  |> Plug.Test.init_test_session(%{
                    Authorize.get_session_name() => %{
                      nonce: "nonce",
                      peer_ip: {127, 0, 0, 1},
                      useragent: "useragent",
                      pkce_verifier: "pkce_verifier",
-                     state_verifier: 0
+                     state_verifier: :erlang.phash2("state")
                    }
                  })
                  |> put_req_header("user-agent", "useragent")
@@ -584,14 +643,14 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
              private: %{AuthorizationCallback => {:error, {:none_alg_used, :token}}}
            } =
              "get"
-             |> conn("/", %{"code" => "code"})
+             |> conn("/", %{"code" => "code", "state" => "state"})
              |> Plug.Test.init_test_session(%{
                Authorize.get_session_name() => %{
                  nonce: "nonce",
                  peer_ip: {127, 0, 0, 1},
                  useragent: "useragent",
                  pkce_verifier: "pkce_verifier",
-                 state_verifier: 0
+                 state_verifier: :erlang.phash2("state")
                }
              })
              |> put_req_header("user-agent", "useragent")
@@ -615,45 +674,77 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
              private: %{AuthorizationCallback => {:error, :provider_not_ready}}
            } =
              "get"
-             |> conn("/", %{"code" => "code"})
-             |> Plug.Test.init_test_session(%{})
+             |> conn("/", %{"code" => "code", "state" => "state"})
+             |> Plug.Test.init_test_session(%{
+               Authorize.get_session_name() => %{
+                 nonce: "nonce",
+                 peer_ip: {127, 0, 0, 1},
+                 useragent: "useragent",
+                 pkce_verifier: "pkce_verifier",
+                 state_verifier: :erlang.phash2("state")
+               }
+             })
              |> put_req_header("user-agent", "useragent")
              |> AuthorizationCallback.call(opts)
   end
 
-  test "no session" do
-    with_mocks [
-      {Oidcc.Token, [],
-       retrieve: fn
-         "code", _client_context, opts ->
-           refute Map.has_key?(opts, :pkce_verifier)
-           {:ok, :token}
-           {:ok, :token}
-       end},
-      {Oidcc.Userinfo, [],
-       retrieve: fn :token, _client_context, %{} ->
-         {:ok, %{"sub" => "sub"}}
-       end}
-    ] do
-      opts =
-        AuthorizationCallback.init(
-          provider: ProviderName,
-          client_id: "client_id",
-          client_secret: "client_secret",
-          redirect_uri: "http://localhost:8080/oidc/return"
-        )
+  describe "session and state validation (GHSA-fg66-w5gp-22cr)" do
+    test "rejects a callback without an authorize session" do
+      with_mock Oidcc.Token, [], retrieve: fn _code, _client_context, _opts -> {:ok, :token} end do
+        opts =
+          AuthorizationCallback.init(
+            provider: ProviderName,
+            client_id: "client_id",
+            client_secret: "client_secret",
+            redirect_uri: "http://localhost:8080/oidc/return",
+            retrieve_userinfo: false
+          )
 
-      assert %{
-               halted: false,
-               private: %{
-                 AuthorizationCallback => {:ok, {:token, %{"sub" => "sub"}}}
-               }
-             } =
-               "get"
-               |> conn("/", %{"code" => "code"})
-               |> Plug.Test.init_test_session(%{})
-               |> put_req_header("user-agent", "useragent")
-               |> AuthorizationCallback.call(opts)
+        assert %{
+                 private: %{
+                   AuthorizationCallback => {:error, :missing_authorize_session}
+                 }
+               } =
+                 "get"
+                 |> conn("/", %{"code" => "attacker_code"})
+                 |> Plug.Test.init_test_session(%{})
+                 |> put_req_header("user-agent", "useragent")
+                 |> AuthorizationCallback.call(opts)
+
+        assert_not_called(Oidcc.Token.retrieve(:_, :_, :_))
+      end
+    end
+
+    test "rejects a callback that omits the state when a verifier is in the session" do
+      with_mock Oidcc.Token, [], retrieve: fn _code, _client_context, _opts -> {:ok, :token} end do
+        opts =
+          AuthorizationCallback.init(
+            provider: ProviderName,
+            client_id: "client_id",
+            client_secret: "client_secret",
+            redirect_uri: "http://localhost:8080/oidc/return",
+            retrieve_userinfo: false
+          )
+
+        assert %{
+                 private: %{AuthorizationCallback => {:error, :state_not_verified}}
+               } =
+                 "get"
+                 |> conn("/", %{"code" => "attacker_code"})
+                 |> Plug.Test.init_test_session(%{
+                   Authorize.get_session_name() => %{
+                     nonce: "nonce",
+                     peer_ip: {127, 0, 0, 1},
+                     useragent: "useragent",
+                     pkce_verifier: "pkce_verifier",
+                     state_verifier: :erlang.phash2("state")
+                   }
+                 })
+                 |> put_req_header("user-agent", "useragent")
+                 |> AuthorizationCallback.call(opts)
+
+        assert_not_called(Oidcc.Token.retrieve(:_, :_, :_))
+      end
     end
   end
 
@@ -724,14 +815,14 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
                  }
                } =
                  "get"
-                 |> conn("/", %{"code" => "code"})
+                 |> conn("/", %{"code" => "code", "state" => "state"})
                  |> Plug.Test.init_test_session(%{
                    Authorize.get_session_name() => %{
                      nonce: "nonce",
                      peer_ip: {127, 0, 0, 1},
                      useragent: "useragent",
                      pkce_verifier: "pkce_verifier",
-                     state_verifier: 0
+                     state_verifier: :erlang.phash2("state")
                    }
                  })
                  |> put_req_header("user-agent", "useragent")
