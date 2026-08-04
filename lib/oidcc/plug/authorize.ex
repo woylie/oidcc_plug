@@ -134,7 +134,7 @@ defmodule Oidcc.Plug.Authorize do
     pkce_verifier = 96 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
 
     peer_ip = conn.remote_ip
-    useragent = conn |> get_req_header("User-Agent") |> List.first()
+    useragent = conn |> get_req_header("user-agent") |> List.first()
 
     authorization_opts =
       opts

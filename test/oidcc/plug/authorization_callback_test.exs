@@ -295,6 +295,56 @@ defmodule Oidcc.Plug.AuthorizationCallbackTest do
                |> AuthorizationCallback.call(opts)
     end
 
+    test "useragent mismatch is detected for a session written by Authorize" do
+      authorize_opts =
+        Authorize.init(
+          provider: ProviderName,
+          client_id: "client_id",
+          client_secret: "client_secret",
+          redirect_uri: "http://localhost:8080/oidc/return"
+        )
+
+      callback_opts =
+        AuthorizationCallback.init(
+          provider: ProviderName,
+          client_id: "client_id",
+          client_secret: "client_secret",
+          redirect_uri: "http://localhost:8080/oidc/return"
+        )
+
+      # Drive the real Authorize plug so the session is built the way production
+      # builds it, rather than hand-crafting it.
+      authorize_conn =
+        with_mock Oidcc.Authorization, [],
+          create_redirect_url: fn _client_context, _opts -> {:ok, "http://example.com"} end do
+          "get"
+          |> conn("/", "")
+          |> Plug.Test.init_test_session(%{})
+          |> put_req_header("user-agent", "victim useragent")
+          |> Authorize.call(authorize_opts)
+        end
+
+      session = get_session(authorize_conn, Authorize.get_session_name())
+
+      # Token retrieval is mocked so that reaching it at all means the useragent
+      # check failed to reject the request.
+      with_mocks [
+        {Oidcc.Token, [], retrieve: fn "code", _client_context, _opts -> {:ok, :token} end},
+        {Oidcc.Userinfo, [], retrieve: fn :token, _client_context, %{} -> {:ok, %{"sub" => "sub"}} end}
+      ] do
+        # Replaying the callback from a different user agent must be rejected.
+        assert %{
+                 halted: false,
+                 private: %{AuthorizationCallback => {:error, :useragent_mismatch}}
+               } =
+                 "get"
+                 |> conn("/", %{"code" => "code"})
+                 |> Plug.Test.init_test_session(%{Authorize.get_session_name() => session})
+                 |> put_req_header("user-agent", "attacker useragent")
+                 |> AuthorizationCallback.call(callback_opts)
+      end
+    end
+
     test "peer_ip mismatch" do
       opts =
         AuthorizationCallback.init(
