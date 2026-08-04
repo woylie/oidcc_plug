@@ -128,7 +128,30 @@ defmodule Oidcc.Plug.UtilsTest do
     end
   end
 
-  describe "get_refresh_jwks_fun/1" do
+  defmodule ClientStoreWithoutRefresh do
+    @moduledoc false
+    @behaviour Oidcc.Plug.ClientStore
+
+    alias Oidcc.Plug.ClientStore
+
+    @impl ClientStore
+    def get_client_context(_conn), do: {:ok, %{}}
+  end
+
+  defmodule ClientStoreWithRefresh do
+    @moduledoc false
+    @behaviour Oidcc.Plug.ClientStore
+
+    alias Oidcc.Plug.ClientStore
+
+    @impl ClientStore
+    def get_client_context(_conn), do: {:ok, %{}}
+
+    @impl ClientStore
+    def refresh_jwks(context), do: {:refreshed, context}
+  end
+
+  describe "put_refresh_jwks/3" do
     test "uses oidcc_jwt_util for provider configuration" do
       refresh_fun = :test_refresh_fun
 
@@ -138,45 +161,40 @@ defmodule Oidcc.Plug.UtilsTest do
           refresh_fun
         end do
         opts = [provider: :test_provider]
-        assert Utils.get_refresh_jwks_fun(opts) == refresh_fun
+
+        assert Utils.put_refresh_jwks(%{}, :client_context, opts) == %{refresh_jwks: refresh_fun}
       end
     end
 
-    test "returns nil when client_store doesn't implement refresh_jwks" do
-      defmodule ClientStoreWithoutRefresh do
-        @moduledoc false
-        @behaviour Oidcc.Plug.ClientStore
-
-        alias Oidcc.Plug.ClientStore
-
-        @impl ClientStore
-        def get_client_context(_conn), do: {:ok, %{}}
-      end
-
-      opts = [client_store: ClientStoreWithoutRefresh]
-
-      assert Utils.get_refresh_jwks_fun(opts) == nil
-    end
-
-    test "returns client_store.refresh_jwks function when implemented" do
-      defmodule ClientStoreWithRefresh do
-        @moduledoc false
-        @behaviour Oidcc.Plug.ClientStore
-
-        alias Oidcc.Plug.ClientStore
-
-        @impl ClientStore
-        def get_client_context(_conn), do: {:ok, %{}}
-
-        @impl ClientStore
-        def refresh_jwks(arg), do: {:refreshed, arg}
-      end
-
+    test "adds a fun with the arity oidcc calls it with" do
       opts = [client_store: ClientStoreWithRefresh]
 
-      refresh_fun = Utils.get_refresh_jwks_fun(opts)
-      assert is_function(refresh_fun, 1)
-      assert refresh_fun.(:test_arg) == {:refreshed, :test_arg}
+      assert %{refresh_jwks: refresh_jwks} = Utils.put_refresh_jwks(%{}, :client_context, opts)
+
+      # oidcc invokes the refresh fun as fun(jwks, kid)
+      assert is_function(refresh_jwks, 2)
+    end
+
+    test "passes the client context to client_store.refresh_jwks/1" do
+      opts = [client_store: ClientStoreWithRefresh]
+
+      %{refresh_jwks: refresh_jwks} = Utils.put_refresh_jwks(%{}, :client_context, opts)
+
+      assert refresh_jwks.(:stale_jwks, "unknown_kid") == {:refreshed, :client_context}
+    end
+
+    test "omits the key for a client_store without the callback" do
+      opts = [client_store: ClientStoreWithoutRefresh]
+
+      # oidcc only skips the refresh when the key is absent, so it must not be
+      # set to nil
+      assert Utils.put_refresh_jwks(%{}, :client_context, opts) == %{}
+    end
+
+    test "keeps existing keys" do
+      opts = [client_store: ClientStoreWithoutRefresh]
+
+      assert Utils.put_refresh_jwks(%{nonce: :any}, :client_context, opts) == %{nonce: :any}
     end
   end
 end
