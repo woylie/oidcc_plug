@@ -141,6 +141,16 @@ defmodule Oidcc.Plug.AuthorizationCallback do
           | :state_not_verified
           | {:missing_request_param, param :: String.t()}
 
+  # what Oidcc.Plug.Authorize writes into the session. peer_ip and useragent are
+  # read back from the client, so the checks tolerate them being absent.
+  @typep session() :: %{
+           nonce: String.t(),
+           peer_ip: :inet.ip_address() | nil,
+           useragent: String.t() | nil,
+           pkce_verifier: String.t(),
+           state_verifier: integer()
+         }
+
   @impl Plug
   def init(opts),
     do:
@@ -185,13 +195,7 @@ defmodule Oidcc.Plug.AuthorizationCallback do
            {:ok, code} <- fetch_request_param(params, "code"),
            scope = Map.get(params, "scope", "openid"),
            token_opts =
-             prepare_retrieve_opts(
-               opts,
-               scope,
-               session.nonce,
-               redirect_uri,
-               session.pkce_verifier
-             ),
+             prepare_retrieve_opts(client_context, session, scope, redirect_uri, opts),
            {:ok, token} <-
              retrieve_token(
                code,
@@ -199,7 +203,7 @@ defmodule Oidcc.Plug.AuthorizationCallback do
                retrieve_userinfo?,
                Map.merge(profile_opts, token_opts)
              ),
-           userinfo_opts = prepare_userinfo_opts(opts),
+           userinfo_opts = prepare_userinfo_opts(client_context, opts),
            {:ok, userinfo} <- retrieve_userinfo(token, client_context, userinfo_opts, retrieve_userinfo?) do
         {:ok, {token, userinfo}}
       end
@@ -217,44 +221,37 @@ defmodule Oidcc.Plug.AuthorizationCallback do
   end
 
   @spec prepare_retrieve_opts(
-          opts :: opts(),
+          client_context :: ClientContext.t(),
+          session :: session(),
           scope :: String.t(),
-          nonce :: String.t() | :any,
           redirect_uri :: String.t(),
-          pkce_verifier :: String.t() | :none
+          opts :: opts()
         ) :: :oidcc_token.retrieve_opts()
-  defp prepare_retrieve_opts(opts, scope, nonce, redirect_uri, pkce_verifier) do
+  defp prepare_retrieve_opts(client_context, session, scope, redirect_uri, opts) do
     scopes = :oidcc_scope.parse(scope)
-
-    refresh_jwks = Utils.get_refresh_jwks_fun(opts)
 
     opts
     |> Keyword.take([:request_opts, :preferred_auth_methods])
     |> Map.new()
     |> Map.merge(%{
-      nonce: nonce,
+      nonce: session.nonce,
       scope: scopes,
       redirect_uri: redirect_uri,
-      pkce_verifier: pkce_verifier,
-      refresh_jwks: refresh_jwks
+      pkce_verifier: session.pkce_verifier
     })
-    |> case do
-      %{pkce_verifier: :none} = opts -> Map.delete(opts, :pkce_verifier)
-      opts -> opts
-    end
+    |> Utils.put_refresh_jwks(client_context, opts)
   end
 
-  @spec prepare_userinfo_opts(opts :: opts()) :: :oidcc_userinfo.retrieve_opts()
-  defp prepare_userinfo_opts(opts) do
-    refresh_jwks = Utils.get_refresh_jwks_fun(opts)
-
-    %{refresh_jwks: refresh_jwks}
+  @spec prepare_userinfo_opts(client_context :: ClientContext.t(), opts :: opts()) ::
+          :oidcc_userinfo.retrieve_opts()
+  defp prepare_userinfo_opts(client_context, opts) do
+    Utils.put_refresh_jwks(%{}, client_context, opts)
   end
 
   # The session is written by Oidcc.Plug.Authorize. Without it, there is nothing
   # to validate. Reject the request to prevent CSRF in that case.
   @spec fetch_authorize_session(conn :: Plug.Conn.t()) ::
-          {:ok, map()} | {:error, error()}
+          {:ok, session()} | {:error, error()}
   defp fetch_authorize_session(conn) do
     case get_session(conn, Authorize.get_session_name()) do
       %{

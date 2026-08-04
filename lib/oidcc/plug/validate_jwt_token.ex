@@ -49,9 +49,10 @@ defmodule Oidcc.Plug.ValidateJwtToken do
   """
   @typedoc since: "0.1.0"
   @type opts :: [
-          provider: GenServer.name(),
-          client_id: String.t() | (-> String.t()),
-          client_secret: String.t() | (-> String.t()),
+          provider: GenServer.name() | nil,
+          client_store: module() | nil,
+          client_id: String.t() | (-> String.t()) | nil,
+          client_secret: String.t() | (-> String.t()) | nil,
           send_inactive_token_response: (conn :: Plug.Conn.t() -> Plug.Conn.t()),
           validate_opts: Oidcc.Token.retrieve_opts()
         ]
@@ -76,6 +77,7 @@ defmodule Oidcc.Plug.ValidateJwtToken do
       opts
       |> Keyword.validate!([
         :provider,
+        :client_store,
         :client_id,
         :client_secret,
         send_inactive_token_response: &__MODULE__.send_inactive_token_response/1,
@@ -89,16 +91,9 @@ defmodule Oidcc.Plug.ValidateJwtToken do
   def call(%Plug.Conn{private: %{ExtractAuthorization => access_token}} = conn, opts) do
     send_inactive_token_response = Keyword.fetch!(opts, :send_inactive_token_response)
 
-    refresh_jwks = Utils.get_refresh_jwks_fun(opts)
-
-    validate_opts =
-      Map.merge(
-        opts[:validate_opts],
-        %{nonce: :any, refresh_jwks: refresh_jwks}
-      )
-
     with {:ok, client_context} <-
            Utils.get_client_context(conn, opts),
+         validate_opts = prepare_validate_opts(client_context, opts),
          {:ok, claims} <-
            Oidcc.Token.validate_id_token(access_token, client_context, validate_opts) do
       put_private(conn, __MODULE__, claims)
@@ -117,6 +112,15 @@ defmodule Oidcc.Plug.ValidateJwtToken do
     raise """
     The plug Oidcc.Plug.ExtractAuthorization must be run before this plug
     """
+  end
+
+  @spec prepare_validate_opts(client_context :: Oidcc.ClientContext.t(), opts :: opts()) ::
+          Oidcc.Token.retrieve_opts()
+  defp prepare_validate_opts(client_context, opts) do
+    opts
+    |> Keyword.fetch!(:validate_opts)
+    |> Map.put(:nonce, :any)
+    |> Utils.put_refresh_jwks(client_context, opts)
   end
 
   @doc false
