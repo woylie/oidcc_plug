@@ -98,6 +98,28 @@ defmodule Oidcc.Plug.AuthorizeTest do
       assert [] = get_resp_header(conn, "location")
     end
 
+    test_with_mock "stores useragent in session", %{}, Oidcc.Authorization, [],
+      create_redirect_url: fn _client_context, %{redirect_uri: "http://localhost:8080/oidc/return", nonce: _nonce} ->
+        {:ok, "http://example.com"}
+      end do
+      opts =
+        Authorize.init(
+          provider: ProviderName,
+          client_id: "client_id",
+          client_secret: "client_secret",
+          redirect_uri: "http://localhost:8080/oidc/return"
+        )
+
+      conn =
+        "get"
+        |> conn("/", "")
+        |> Plug.Test.init_test_session(%{})
+        |> put_req_header("user-agent", "test useragent")
+        |> Authorize.call(opts)
+
+      assert %{useragent: "test useragent"} = get_session(conn, Authorize.get_session_name())
+    end
+
     test_with_mock "error handling", %{}, Oidcc.Authorization, [],
       create_redirect_url: fn _client_context, %{redirect_uri: "http://localhost:8080/oidc/return", nonce: _nonce} ->
         {:error, :provider_not_ready}

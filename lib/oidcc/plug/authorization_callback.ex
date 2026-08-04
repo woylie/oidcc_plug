@@ -137,6 +137,8 @@ defmodule Oidcc.Plug.AuthorizationCallback do
           | :oidcc_userinfo.error()
           | :useragent_mismatch
           | :peer_ip_mismatch
+          | :missing_authorize_session
+          | :state_not_verified
           | {:missing_request_param, param :: String.t()}
 
   @impl Plug
@@ -166,44 +168,30 @@ defmodule Oidcc.Plug.AuthorizationCallback do
 
     params = Map.merge(params, body_params)
 
-    %{
-      nonce: nonce,
-      peer_ip: peer_ip,
-      useragent: useragent,
-      pkce_verifier: pkce_verifier,
-      state_verifier: state_verifier
-    } =
-      case get_session(conn, Authorize.get_session_name()) do
-        nil ->
-          %{
-            nonce: :any,
-            peer_ip: nil,
-            useragent: nil,
-            pkce_verifier: :none,
-            state_verifier: :none
-          }
-
-        %{} = session ->
-          session
-      end
-
     check_peer_ip? = Keyword.fetch!(opts, :check_peer_ip)
     check_useragent? = Keyword.fetch!(opts, :check_useragent)
     retrieve_userinfo? = Keyword.fetch!(opts, :retrieve_userinfo)
 
     result =
-      with {:ok, client_context} <-
+      with {:ok, session} <- fetch_authorize_session(conn),
+           {:ok, client_context} <-
              Utils.get_client_context(conn, opts),
            {:ok, client_context, profile_opts} <-
              apply_profile(client_context, client_profile_opts),
-           :ok <- check_peer_ip(conn, peer_ip, check_peer_ip?),
-           :ok <- check_useragent(conn, useragent, check_useragent?),
-           :ok <- check_state(params, state_verifier),
+           :ok <- check_peer_ip(conn, session.peer_ip, check_peer_ip?),
+           :ok <- check_useragent(conn, session.useragent, check_useragent?),
+           :ok <- check_state(params, session.state_verifier),
            :ok <- check_issuer_request_param(params, client_context),
            {:ok, code} <- fetch_request_param(params, "code"),
            scope = Map.get(params, "scope", "openid"),
            token_opts =
-             prepare_retrieve_opts(opts, scope, nonce, redirect_uri, pkce_verifier),
+             prepare_retrieve_opts(
+               opts,
+               scope,
+               session.nonce,
+               redirect_uri,
+               session.pkce_verifier
+             ),
            {:ok, token} <-
              retrieve_token(
                code,
@@ -217,9 +205,10 @@ defmodule Oidcc.Plug.AuthorizationCallback do
       end
 
     authorize_state =
-      params
-      |> Map.get("state", "")
-      |> Utils.remove_csrf_payload()
+      case Map.get(params, "state") do
+        state when is_binary(state) -> Utils.remove_csrf_payload(state)
+        _other -> nil
+      end
 
     conn
     |> delete_session(Authorize.get_session_name())
@@ -260,6 +249,27 @@ defmodule Oidcc.Plug.AuthorizationCallback do
     refresh_jwks = Utils.get_refresh_jwks_fun(opts)
 
     %{refresh_jwks: refresh_jwks}
+  end
+
+  # The session is written by Oidcc.Plug.Authorize. Without it, there is nothing
+  # to validate. Reject the request to prevent CSRF in that case.
+  @spec fetch_authorize_session(conn :: Plug.Conn.t()) ::
+          {:ok, map()} | {:error, error()}
+  defp fetch_authorize_session(conn) do
+    case get_session(conn, Authorize.get_session_name()) do
+      %{
+        nonce: _nonce,
+        peer_ip: _peer_ip,
+        useragent: _useragent,
+        pkce_verifier: _pkce_verifier,
+        state_verifier: state_verifier
+      } = session
+      when is_integer(state_verifier) ->
+        {:ok, session}
+
+      _other ->
+        {:error, :missing_authorize_session}
+    end
   end
 
   @spec check_peer_ip(
@@ -317,11 +327,11 @@ defmodule Oidcc.Plug.AuthorizationCallback do
 
   defp check_issuer_request_param(_params, _client_context), do: :ok
 
+  # Oidcc.Plug.Authorize always puts a state into the authorization request and a
+  # verifier into the session => requests without state should always fail
   defp check_state(params, state_verifier)
-  defp check_state(%{"state" => _state}, :none), do: {:error, :state_not_verified}
-  defp check_state(_params, :none), do: :ok
 
-  defp check_state(%{"state" => state}, state_verifier) do
+  defp check_state(%{"state" => state}, state_verifier) when is_binary(state) do
     if :erlang.phash2(state) == state_verifier do
       :ok
     else
@@ -329,7 +339,9 @@ defmodule Oidcc.Plug.AuthorizationCallback do
     end
   end
 
-  defp check_state(_params, _state), do: :ok
+  # a verifier is in the session, but no state was passed in the callback
+  # request => reject
+  defp check_state(_params, _state), do: {:error, :state_not_verified}
 
   @spec retrieve_token(
           code :: String.t(),
